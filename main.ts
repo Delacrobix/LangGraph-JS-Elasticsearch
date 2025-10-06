@@ -6,41 +6,87 @@ import {
   esClient,
   ingestDocuments,
   createIndex,
+  createSearchTemplates,
   INDEX_NAME,
-} from "./ingest.js";
+  STRICT_SEARCH_TEMPLATE_ID,
+} from "./elasticsearchSetup.js";
 
 const llm = new ChatOpenAI({ model: "gpt-4o-mini" });
-const AVAILABLE_FILTERS = require("./availableFilters.json");
 
-// Define state for VC workflow
+// Define state for workflow
 const VCState = Annotation.Root({
   input: Annotation<string>(), // User's natural language query
-  searchStrategy: Annotation<string>(), // Search strategy decision: "structured" or "semantic"
-  structuredQuery: Annotation<string>(), // LLM-generated Elasticsearch query
+  searchStrategy: Annotation<string>(), // Search strategy decision: "strict" or "flexible"
+  searchParams: Annotation<any>(), // Prepared search parameters with template_id
   results: Annotation<any[]>(), // Search results
   final: Annotation<string>(), // Final formatted response
 });
 
+// Extract available filter values from Elasticsearch using aggregations
+async function getAvailableFilters() {
+  try {
+    const response = await esClient.search({
+      index: INDEX_NAME,
+      size: 0,
+      aggs: {
+        industries: {
+          terms: { field: "industry", size: 100 },
+        },
+        locations: {
+          terms: { field: "location", size: 100 },
+        },
+        funding_stages: {
+          terms: { field: "funding_stage", size: 20 },
+        },
+        business_models: {
+          terms: { field: "business_model", size: 10 },
+        },
+        lead_investors: {
+          terms: { field: "lead_investor", size: 100 },
+        },
+        funding_amount_stats: {
+          stats: { field: "funding_amount" },
+        },
+        monthly_revenue_stats: {
+          stats: { field: "monthly_revenue" },
+        },
+        employee_count_stats: {
+          stats: { field: "employee_count" },
+        },
+      },
+    });
+
+    return response.aggregations;
+  } catch (error) {
+    console.error("❌ Error getting available filters:", error);
+
+    return {};
+  }
+}
+
 // Node 1: Decide search strategy using LLM
 async function decideSearchStrategy(state: typeof VCState.State) {
-  // Zod schema for search strategy decision
+  // Zod schema for hybrid search template decision
   const SearchDecisionSchema = z.object({
     search_type: z
-      .enum(["structured", "semantic"])
-      .describe("Type of search to perform"),
+      .enum(["strict", "flexible"])
+      .describe("Type of hybrid search template to use"),
     reasoning: z
       .string()
-      .describe("Brief explanation of why this search type was chosen"),
+      .describe("Brief explanation of why this search template was chosen"),
   });
 
   const decisionLLM = llm.withStructuredOutput(SearchDecisionSchema);
 
-  const prompt = `Query: "${state.input}"
-    Available filters: ${JSON.stringify(AVAILABLE_FILTERS, null, 2)}
+  // Get dynamic filters from Elasticsearch
+  const availableFilters = await getAvailableFilters();
 
-    Choose:
-    - "structured" if query mentions specific filters (funding stage, location, industry, amounts)
-    - "semantic" if query is conceptual or exploratory
+  const prompt = `Query: "${state.input}"
+    Available filters: ${JSON.stringify(availableFilters, null, 2)}
+
+    Choose between two hybrid search templates:
+    - "strict" for precise searches with exact criteria (filters are required, semantic similarity secondary)
+    - "flexible" for exploratory searches and discovery (semantic similarity primary, filters relevance)
   `;
 
   try {
@@ -61,157 +107,234 @@ async function decideSearchStrategy(state: typeof VCState.State) {
   }
 }
 
-// Node 2: Convert natural language to structured Elasticsearch filters
-async function generateElasticsearchQuery(state: typeof VCState.State) {
-  // const mappings = await esClient.indices.getMapping({ index: INDEX_NAME });
-
-  // Zod schema for extracted filter values
+// Helper function to extract filter values
+async function extractFilterValues(input: string) {
   const FilterValuesSchema = z.object({
     industry: z
       .array(z.string())
-      .optional()
+      .default([])
       .describe("Industry values mentioned in query"),
     location: z
       .array(z.string())
-      .optional()
+      .default([])
       .describe("Location values mentioned in query"),
     funding_stage: z
       .array(z.string())
-      .optional()
+      .default([])
       .describe("Funding stage values mentioned in query"),
     funding_amount_gte: z
       .number()
-      .optional()
+      .default(0)
       .describe("Minimum funding amount in USD"),
     funding_amount_lte: z
       .number()
-      .optional()
+      .default(100000000)
       .describe("Maximum funding amount in USD"),
     lead_investor: z
       .array(z.string())
-      .optional()
+      .default([])
       .describe("Lead investor values mentioned in query"),
   });
 
-  // LLM extracts values to fill template
   const extractorLLM = llm.withStructuredOutput(FilterValuesSchema);
+  const availableFilters = await getAvailableFilters();
 
-  const extractPrompt = `Extract filter values from: "${state.input}"
-    Available options: ${JSON.stringify(AVAILABLE_FILTERS, null, 2)}
+  const extractPrompt = `Extract filter values from: "${input}"
+    Available options: ${JSON.stringify(availableFilters, null, 2)}
+    Extract only values mentioned in the query. Leave fields empty if not mentioned.`;
 
-    Extract only values mentioned in the query. Leave fields empty if not mentioned.
-  `;
+  return await extractorLLM.invoke(extractPrompt);
+}
+
+// Node 2A: Prepare Strict Search Parameters (predefined template with filters + semantic + RRF retrievers)
+async function prepareStrictParams(state: typeof VCState.State) {
+  console.log(
+    "🎯 Preparing STRICT search parameters with predefined RRF template..."
+  );
 
   try {
-    const values = await extractorLLM.invoke(extractPrompt);
+    // Extract filters for the predefined template
+    const values = await extractFilterValues(state.input);
 
-    // Template with ternary validation
-    const elasticsearchQuery = {
-      bool: {
-        filter: [
-          ...(values.industry && values.industry.length > 0
-            ? [{ terms: { industry: values.industry } }]
-            : []),
-          ...(values.location && values.location.length > 0
-            ? [{ terms: { location: values.location } }]
-            : []),
-          ...(values.funding_stage && values.funding_stage.length > 0
-            ? [{ terms: { funding_stage: values.funding_stage } }]
-            : []),
-          ...(values.funding_amount_gte || values.funding_amount_lte
-            ? [
-                {
-                  range: {
-                    funding_amount: {
-                      ...(values.funding_amount_gte && {
-                        gte: values.funding_amount_gte,
-                      }),
-                      ...(values.funding_amount_lte && {
-                        lte: values.funding_amount_lte,
-                      }),
-                    },
-                  },
-                },
-              ]
-            : []),
-          ...(values.lead_investor && values.lead_investor.length > 0
-            ? [{ terms: { lead_investor: values.lead_investor } }]
-            : []),
-        ],
-      },
+    const searchParams = {
+      query_text: state.input,
+      industry: values.industry || [],
+      location: values.location || [],
+      funding_stage: values.funding_stage || [],
+      funding_amount_gte: values.funding_amount_gte || 0,
+      funding_amount_lte: values.funding_amount_lte || 100000000,
+      lead_investor: values.lead_investor || [],
+      template_id: STRICT_SEARCH_TEMPLATE_ID,
+      search_type: "strict_template_rrf",
     };
 
+    console.log(
+      "🎯 STRICT template params (predefined RRF):",
+      JSON.stringify(searchParams, null, 2)
+    );
+
+    return { searchParams };
+  } catch (error) {
+    console.error("❌ Error preparing strict params:", error);
     return {
-      structuredQuery: JSON.stringify({
-        elasticsearch_query: elasticsearchQuery,
-      }),
-    };
-  } catch (error: any) {
-    console.error("❌ Error in queryProcessor:", error.message);
-    return {
-      structuredQuery: JSON.stringify({ semantic_query: state.input }),
+      searchParams: {},
     };
   }
 }
 
-// Node 3: Perform semantic search using text similarity
-async function performSemanticSearch(state: typeof VCState.State) {
-  console.log("🔍 Performing semantic search...");
+// Node 2B: Prepare Flexible Search Parameters (dynamic query built from LLM-extracted filters)
+async function prepareFlexibleParams(state: typeof VCState.State) {
+  console.log(
+    "� Preparing FLEXIBLE search parameters with LLM-driven dynamic query..."
+  );
 
   try {
-    const results = await esClient.search({
-      index: INDEX_NAME,
-      query: {
+    // Extract filters using LLM and build dynamic query
+    const values = await extractFilterValues(state.input);
+
+    // Build dynamic query based on extracted filters
+    const mustClauses = [
+      {
         semantic: {
           field: "semantic_field",
           query: state.input,
         },
       },
-      size: 5, // Limit results for semantic search
-    });
+    ];
+
+    const shouldClauses = [];
+
+    if (values.industry && values.industry.length > 0) {
+      shouldClauses.push({
+        terms: {
+          industry: values.industry,
+        },
+      });
+    }
+
+    if (values.funding_stage && values.funding_stage.length > 0) {
+      shouldClauses.push({
+        terms: {
+          funding_stage: values.funding_stage,
+        },
+      });
+    }
+
+    if (values.location && values.location.length > 0) {
+      shouldClauses.push({
+        terms: {
+          location: values.location,
+        },
+      });
+    }
+
+    if (values.lead_investor && values.lead_investor.length > 0) {
+      shouldClauses.push({
+        terms: {
+          lead_investor: values.lead_investor,
+        },
+      });
+    }
+
+    if (
+      (values.funding_amount_gte && values.funding_amount_gte > 0) ||
+      (values.funding_amount_lte && values.funding_amount_lte < 100000000)
+    ) {
+      shouldClauses.push({
+        range: {
+          funding_amount: {
+            ...(values.funding_amount_gte &&
+              values.funding_amount_gte > 0 && {
+                gte: values.funding_amount_gte,
+              }),
+            ...(values.funding_amount_lte &&
+              values.funding_amount_lte < 100000000 && {
+                lte: values.funding_amount_lte,
+              }),
+          },
+        },
+      });
+    }
+
+    const dynamicQuery = {
+      size: 5,
+      query: {
+        bool: {
+          must: mustClauses,
+          should: shouldClauses,
+          minimum_should_match: 2,
+        },
+      },
+    };
+
+    const searchParams = {
+      query_text: state.input,
+      dynamic_query: dynamicQuery,
+      extracted_filters: values,
+      search_type: "flexible_dynamic_llm",
+    };
 
     console.log(
-      `📊 Found ${results.hits.hits.length} results via semantic search`
+      "🌟 FLEXIBLE dynamic query built from LLM:",
+      JSON.stringify(searchParams.dynamic_query, null, 2)
     );
 
-    return {
-      results: results.hits.hits.map((hit: any) => hit._source),
-    };
+    return { searchParams };
   } catch (error) {
-    console.error("Search error:", error);
-    return {
-      results: [],
-    };
+    console.error("❌ Error preparing flexible params:", error);
+    return {};
   }
 }
 
-// Node 4: Execute structured search with filters
-async function retrieveElasticsearchData(state: typeof VCState.State) {
-  const parsedQuery = JSON.parse(state.structuredQuery);
-
-  console.log(
-    "🔍 Elasticsearch query:",
-    JSON.stringify(parsedQuery.elasticsearch_query, null, 2)
-  );
+// Node 3: Execute Search
+async function executeSearch(state: typeof VCState.State) {
+  console.log(`🔍 Executing ${state.searchParams.search_type} search...`);
 
   try {
-    const results = await esClient.search({
-      index: INDEX_NAME,
-      query: parsedQuery.elasticsearch_query,
-    });
+    const { searchParams } = state;
+
+    let results;
+
+    if (searchParams.dynamic_query) {
+      // Strict: Execute dynamic query built in code
+      console.log(
+        `📋 ${searchParams.search_type.toUpperCase()} DYNAMIC QUERY:`,
+        JSON.stringify(searchParams.dynamic_query, null, 2)
+      );
+
+      results = await esClient.search({
+        index: INDEX_NAME,
+        ...searchParams.dynamic_query,
+      });
+    } else {
+      // Flexible: Execute template-based query
+      const renderedTemplate = await esClient.renderSearchTemplate({
+        id: searchParams.template_id,
+        params: searchParams,
+      });
+
+      console.log(
+        `📋 ${searchParams.search_type.toUpperCase()} TEMPLATE QUERY:`,
+        JSON.stringify(renderedTemplate.template_output, null, 2)
+      );
+
+      results = await esClient.searchTemplate({
+        index: INDEX_NAME,
+        id: searchParams.template_id,
+        params: searchParams,
+      });
+    }
 
     return {
       results: results.hits.hits.map((hit: any) => hit._source),
     };
   } catch (error) {
-    console.error("Search error:", error);
-    return {
-      results: [],
-    };
+    console.error(`❌ ${state.searchParams.search_type} search error:`, error);
+    return { results: [] };
   }
 }
 
-// Node 5: Visualize results
+// Node 4: Visualize results
 async function visualizeResults(state: typeof VCState.State) {
   const results = state.results || [];
 
@@ -254,42 +377,44 @@ async function saveGraphImage(app: any): Promise<void> {
 async function main() {
   await createIndex();
   await ingestDocuments();
+  await createSearchTemplates();
 
   // Create the workflow graph with shared state
   const workflow = new StateGraph(VCState)
     // Register nodes - these are the processing functions
     .addNode("decideStrategy", decideSearchStrategy)
-    .addNode("generateQuery", generateElasticsearchQuery)
-    .addNode("semanticSearch", performSemanticSearch)
-    .addNode("retrieveData", retrieveElasticsearchData)
+    .addNode("prepareStrictParams", prepareStrictParams)
+    .addNode("prepareFlexibleParams", prepareFlexibleParams)
+    .addNode("executeSearch", executeSearch)
     .addNode("visualizeResults", visualizeResults)
-    // Define execution flow - edges determine the order of execution
+    // Define execution flow with conditional branching
     .addEdge("__start__", "decideStrategy") // Start with strategy decision
     .addConditionalEdges(
       "decideStrategy",
-      (state) => state.searchStrategy, // Decision function
+      (state: typeof VCState.State) => state.searchStrategy, // Conditional function
       {
-        structured: "generateQuery", // If structured
-        semantic: "semanticSearch", // If semantic
+        strict: "prepareStrictParams", // If strict -> dynamic query preparation
+        flexible: "prepareFlexibleParams", // If flexible -> template preparation
       }
     )
-    .addEdge("generateQuery", "retrieveData") // Structured search -> retrieve data
-    .addEdge("semanticSearch", "visualizeResults") // Semantic search -> visualize directly
-    .addEdge("retrieveData", "visualizeResults") // Retrieved data -> visualize results
+    .addEdge("prepareStrictParams", "executeSearch") // Strict prep -> execute
+    .addEdge("prepareFlexibleParams", "executeSearch") // Flexible prep -> execute
+    .addEdge("executeSearch", "visualizeResults") // Execute -> visualize
     .addEdge("visualizeResults", "__end__"); // End workflow
 
   const app = workflow.compile();
 
   await saveGraphImage(app);
 
-  const query =
-    "Find me Series A logistics and fintech startups in San Francisco or New York with funding between $5M to $25M from top investors like Sequoia Capital";
+  const strictQuery =
+    "Find exactly Series A fintech startups in San Francisco with funding between $10M-$15M from Andreessen Horowitz";
 
-  const semanticQuery =
-    "Show me innovative companies that are disrupting traditional industries like Tesla did for automotive";
+  const flexibleQuery =
+    "Find promising early-stage startups in tech hubs that are similar to successful fintech companies";
 
-  const result = await app.invoke({ input: semanticQuery });
-  console.log(result.final);
+  console.log("🔍 Testing strict hybrid search...");
+  const strictResult = await app.invoke({ input: strictQuery });
+  console.log(strictResult.final);
 }
 
 main().catch(console.error);

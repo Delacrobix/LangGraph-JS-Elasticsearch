@@ -6,6 +6,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const INDEX_NAME: string = "startups-index";
+const STRICT_SEARCH_TEMPLATE_ID = "startup-strict-search-template";
 const ELASTICSEARCH_ENDPOINT: string = process.env.ELASTICSEARCH_ENDPOINT ?? "";
 const ELASTICSEARCH_API_KEY: string = process.env.ELASTICSEARCH_API_KEY ?? "";
 
@@ -118,4 +119,98 @@ async function ingestDocuments() {
   }
 }
 
-export { createIndex, ingestDocuments, esClient, INDEX_NAME };
+// Register hybrid search templates in Elasticsearch
+async function createSearchTemplates() {
+  try {
+    console.log("🔧 Creating strict search template...");
+
+    await esClient.putScript({
+      id: STRICT_SEARCH_TEMPLATE_ID,
+      script: {
+        lang: "mustache",
+        source: `{
+          "size": 5,
+          "retriever": {
+            "rrf": {
+              "retrievers": [
+                {
+                  "standard": {
+                    "query": {
+                      "semantic": {
+                        "field": "semantic_field",
+                        "query": "{{query_text}}"
+                      }
+                    }
+                  }
+                },
+                {
+                  "standard": {
+                    "query": {
+                      "bool": {
+                        "filter": [
+                          {{#industry}}
+                          {
+                            "terms": {
+                              "industry": {{#toJson}}industry{{/toJson}}
+                            }
+                          },
+                          {{/industry}}
+                          {{#location}}
+                          {
+                            "terms": {
+                              "location": {{#toJson}}location{{/toJson}}
+                            }
+                          },
+                          {{/location}}
+                          {{#funding_stage}}
+                          {
+                            "terms": {
+                              "funding_stage": {{#toJson}}funding_stage{{/toJson}}
+                            }
+                          },
+                          {{/funding_stage}}
+                          {{#funding_amount_gte}}
+                          {
+                            "range": {
+                              "funding_amount": {
+                                "gte": {{funding_amount_gte}}
+                                {{#funding_amount_lte}},"lte": {{funding_amount_lte}}{{/funding_amount_lte}}
+                              }
+                            }
+                          },
+                          {{/funding_amount_gte}}
+                          {{#lead_investor}}
+                          {
+                            "terms": {
+                              "lead_investor": {{#toJson}}lead_investor{{/toJson}}
+                            }
+                          }
+                          {{/lead_investor}}
+                        ]
+                      }
+                    }
+                  }
+                }
+              ],
+              "rank_window_size": 100,
+              "rank_constant": 20
+            }
+          }
+        }`,
+      },
+    });
+
+    console.log("✅ Strict search template created successfully!");
+  } catch (error) {
+    console.error("❌ Error creating search templates:", error);
+  }
+}
+
+export {
+  createIndex,
+  ingestDocuments,
+  createSearchTemplates,
+  esClient,
+  INDEX_NAME,
+  STRICT_SEARCH_TEMPLATE_ID,
+};

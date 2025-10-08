@@ -6,7 +6,8 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const INDEX_NAME: string = "startups-index";
-const STRICT_SEARCH_TEMPLATE_ID = "startup-strict-search-template";
+const INVESTMENT_FOCUSED_TEMPLATE = "investment-focused-template";
+const MARKET_FOCUSED_TEMPLATE = "market-focused-template";
 const ELASTICSEARCH_ENDPOINT: string = process.env.ELASTICSEARCH_ENDPOINT ?? "";
 const ELASTICSEARCH_API_KEY: string = process.env.ELASTICSEARCH_API_KEY ?? "";
 
@@ -41,57 +42,54 @@ async function loadDataset(path: string): Promise<StartupDocumentType[]> {
 }
 
 async function createIndex() {
-  console.log("🔍 Checking if index exists...");
   const indexExists = await esClient.indices.exists({ index: INDEX_NAME });
 
-  if (!indexExists) {
-    console.log("🏗️ Creating index...");
-
-    await esClient.indices.create({
-      index: INDEX_NAME,
-      mappings: {
-        properties: {
-          description: {
-            type: "text",
-            copy_to: "semantic_field",
-          },
-          company_name: {
-            type: "keyword",
-            copy_to: "semantic_field",
-          },
-          industry: {
-            type: "keyword",
-            copy_to: "semantic_field",
-          },
-          location: {
-            type: "keyword",
-            copy_to: "semantic_field",
-          },
-          funding_stage: {
-            type: "keyword",
-            copy_to: "semantic_field",
-          },
-          funding_amount: { type: "long" },
-          lead_investor: {
-            type: "keyword",
-            copy_to: "semantic_field",
-          },
-          monthly_revenue: { type: "long" },
-          employee_count: { type: "integer" },
-          business_model: {
-            type: "keyword",
-            copy_to: "semantic_field",
-          },
-          semantic_field: { type: "semantic_text" },
-        },
-      },
-    });
-
-    console.log("✅ Index created successfully!");
+  if (indexExists) {
+    console.log("✅ Index already exists.");
     return;
   }
 
-  console.log("✅ Index already exists.");
+  await esClient.indices.create({
+    index: INDEX_NAME,
+    mappings: {
+      properties: {
+        description: {
+          type: "text",
+          copy_to: "semantic_field",
+        },
+        company_name: {
+          type: "keyword",
+          copy_to: "semantic_field",
+        },
+        industry: {
+          type: "keyword",
+          copy_to: "semantic_field",
+        },
+        location: {
+          type: "keyword",
+          copy_to: "semantic_field",
+        },
+        funding_stage: {
+          type: "keyword",
+          copy_to: "semantic_field",
+        },
+        funding_amount: { type: "long" },
+        lead_investor: {
+          type: "keyword",
+          copy_to: "semantic_field",
+        },
+        monthly_revenue: { type: "long" },
+        employee_count: { type: "integer" },
+        business_model: {
+          type: "keyword",
+          copy_to: "semantic_field",
+        },
+        semantic_field: { type: "semantic_text" },
+      },
+    },
+  });
+
+  console.log("✅ Index created successfully!");
 }
 
 async function ingestDocuments() {
@@ -110,7 +108,7 @@ async function ingestDocuments() {
         doc,
       ]);
 
-      const response = await esClient.bulk({ body });
+      await esClient.bulk({ body });
 
       console.log("✅ Documents ingested successfully!");
     } catch (error: any) {
@@ -119,13 +117,11 @@ async function ingestDocuments() {
   }
 }
 
-// Register hybrid search templates in Elasticsearch
+// Register RRF hybrid search templates in Elasticsearch
 async function createSearchTemplates() {
   try {
-    console.log("🔧 Creating strict search template...");
-
     await esClient.putScript({
-      id: STRICT_SEARCH_TEMPLATE_ID,
+      id: INVESTMENT_FOCUSED_TEMPLATE,
       script: {
         lang: "mustache",
         source: `{
@@ -148,44 +144,10 @@ async function createSearchTemplates() {
                     "query": {
                       "bool": {
                         "filter": [
-                          {{#industry}}
-                          {
-                            "terms": {
-                              "industry": {{#toJson}}industry{{/toJson}}
-                            }
-                          },
-                          {{/industry}}
-                          {{#location}}
-                          {
-                            "terms": {
-                              "location": {{#toJson}}location{{/toJson}}
-                            }
-                          },
-                          {{/location}}
-                          {{#funding_stage}}
-                          {
-                            "terms": {
-                              "funding_stage": {{#toJson}}funding_stage{{/toJson}}
-                            }
-                          },
-                          {{/funding_stage}}
-                          {{#funding_amount_gte}}
-                          {
-                            "range": {
-                              "funding_amount": {
-                                "gte": {{funding_amount_gte}}
-                                {{#funding_amount_lte}},"lte": {{funding_amount_lte}}{{/funding_amount_lte}}
-                              }
-                            }
-                          },
-                          {{/funding_amount_gte}}
-                          {{#lead_investor}}
-                          {
-                            "terms": {
-                              "lead_investor": {{#toJson}}lead_investor{{/toJson}}
-                            }
-                          }
-                          {{/lead_investor}}
+                          {"terms": {"funding_stage": {{#join}}{{#toJson}}funding_stage{{/toJson}}{{/join}}}},
+                          {"range": {"funding_amount": {"gte": {{funding_amount_gte}}{{#funding_amount_lte}},"lte": {{funding_amount_lte}}{{/funding_amount_lte}}}}},
+                          {"terms": {"lead_investor": {{#join}}{{#toJson}}lead_investor{{/toJson}}{{/join}}}},
+                          {"range": {"monthly_revenue": {"gte": {{monthly_revenue_gte}}{{#monthly_revenue_lte}},"lte": {{monthly_revenue_lte}}{{/monthly_revenue_lte}}}}}
                         ]
                       }
                     }
@@ -200,9 +162,52 @@ async function createSearchTemplates() {
       },
     });
 
-    console.log("✅ Strict search template created successfully!");
+    console.log("✅ Investment-focused template created successfully!");
+
+    await esClient.putScript({
+      id: MARKET_FOCUSED_TEMPLATE,
+      script: {
+        lang: "mustache",
+        source: `{
+          "size": 5,
+          "retriever": {
+            "rrf": {
+              "retrievers": [
+                {
+                  "standard": {
+                    "query": {
+                      "semantic": {
+                        "field": "semantic_field",
+                        "query": "{{query_text}}"
+                      }
+                    }
+                  }
+                },
+                {
+                  "standard": {
+                    "query": {
+                      "bool": {
+                        "filter": [
+                          {"terms": {"industry": {{#join}}{{#toJson}}industry{{/toJson}}{{/join}}}},
+                          {"terms": {"location": {{#join}}{{#toJson}}location{{/toJson}}{{/join}}}},
+                          {"terms": {"business_model": {{#join}}{{#toJson}}business_model{{/toJson}}{{/join}}}}
+                        ]
+                      }
+                    }
+                  }
+                }
+              ],
+              "rank_window_size": 50,
+              "rank_constant": 10
+            }
+          }
+        }`,
+      },
+    });
+
+    console.log("✅ Market-focused template created successfully!");
   } catch (error) {
-    console.error("❌ Error creating search templates:", error);
+    console.error("❌ Error creating RRF templates:", error);
   }
 }
 
@@ -212,5 +217,6 @@ export {
   createSearchTemplates,
   esClient,
   INDEX_NAME,
-  STRICT_SEARCH_TEMPLATE_ID,
+  INVESTMENT_FOCUSED_TEMPLATE,
+  MARKET_FOCUSED_TEMPLATE,
 };

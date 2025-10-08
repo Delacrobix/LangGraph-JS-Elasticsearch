@@ -5,10 +5,11 @@ import { z } from "zod";
 import {
   esClient,
   ingestDocuments,
-  createIndex,
   createSearchTemplates,
   INDEX_NAME,
-  STRICT_SEARCH_TEMPLATE_ID,
+  INVESTMENT_FOCUSED_TEMPLATE,
+  MARKET_FOCUSED_TEMPLATE,
+  createIndex,
 } from "./elasticsearchSetup.js";
 
 const llm = new ChatOpenAI({ model: "gpt-4o-mini" });
@@ -16,8 +17,8 @@ const llm = new ChatOpenAI({ model: "gpt-4o-mini" });
 // Define state for workflow
 const VCState = Annotation.Root({
   input: Annotation<string>(), // User's natural language query
-  searchStrategy: Annotation<string>(), // Search strategy decision: "strict" or "flexible"
-  searchParams: Annotation<any>(), // Prepared search parameters with template_id
+  searchStrategy: Annotation<string>(), // Search strategy chosen by LLM
+  searchParams: Annotation<any>(), // Prepared search parameters
   results: Annotation<any[]>(), // Search results
   final: Annotation<string>(), // Final formatted response
 });
@@ -47,12 +48,6 @@ async function getAvailableFilters() {
         funding_amount_stats: {
           stats: { field: "funding_amount" },
         },
-        monthly_revenue_stats: {
-          stats: { field: "monthly_revenue" },
-        },
-        employee_count_stats: {
-          stats: { field: "employee_count" },
-        },
       },
     });
 
@@ -66,14 +61,14 @@ async function getAvailableFilters() {
 
 // Node 1: Decide search strategy using LLM
 async function decideSearchStrategy(state: typeof VCState.State) {
-  // Zod schema for hybrid search template decision
+  // Zod schema for specialized search strategy decision
   const SearchDecisionSchema = z.object({
     search_type: z
-      .enum(["strict", "flexible"])
-      .describe("Type of hybrid search template to use"),
+      .enum(["investment_focused", "market_focused"])
+      .describe("Type of specialized search strategy to use"),
     reasoning: z
       .string()
-      .describe("Brief explanation of why this search template was chosen"),
+      .describe("Brief explanation of why this search strategy was chosen"),
   });
 
   const decisionLLM = llm.withStructuredOutput(SearchDecisionSchema);
@@ -84,9 +79,13 @@ async function decideSearchStrategy(state: typeof VCState.State) {
   const prompt = `Query: "${state.input}"
     Available filters: ${JSON.stringify(availableFilters, null, 2)}
 
-    Choose between two hybrid search templates:
-    - "strict" for precise searches with exact criteria (filters are required, semantic similarity secondary)
-    - "flexible" for exploratory searches and discovery (semantic similarity primary, filters relevance)
+    Choose between two specialized search strategies:
+    
+    - investment_focused: For queries about funding stages, funding amounts, monthly revenue, lead investors, financial performance
+    
+    - market_focused: For queries about industries, locations, business models, market segments, geographic markets
+    
+    Analyze the query intent and choose the most appropriate strategy.
   `;
 
   try {
@@ -100,24 +99,16 @@ async function decideSearchStrategy(state: typeof VCState.State) {
     };
   } catch (error: any) {
     console.error("❌ Error in decideSearchStrategy:", error.message);
-    // Default to structured search on error
     return {
-      searchStrategy: "structured",
+      searchStrategy: "investment_focused",
     };
   }
 }
 
-// Helper function to extract filter values
+// Extract all possible filter values from user input
 async function extractFilterValues(input: string) {
   const FilterValuesSchema = z.object({
-    industry: z
-      .array(z.string())
-      .default([])
-      .describe("Industry values mentioned in query"),
-    location: z
-      .array(z.string())
-      .default([])
-      .describe("Location values mentioned in query"),
+    // Investment-focused filters
     funding_stage: z
       .array(z.string())
       .default([])
@@ -134,201 +125,112 @@ async function extractFilterValues(input: string) {
       .array(z.string())
       .default([])
       .describe("Lead investor values mentioned in query"),
+    monthly_revenue_gte: z
+      .number()
+      .default(0)
+      .describe("Minimum monthly revenue in USD"),
+    monthly_revenue_lte: z
+      .number()
+      .default(10000000)
+      .describe("Maximum monthly revenue in USD"),
+    industry: z
+      .array(z.string())
+      .default([])
+      .describe("Industry values mentioned in query"),
+    location: z
+      .array(z.string())
+      .default([])
+      .describe("Location values mentioned in query"),
+    business_model: z
+      .array(z.string())
+      .default([])
+      .describe("Business model values mentioned in query"),
   });
 
   const extractorLLM = llm.withStructuredOutput(FilterValuesSchema);
   const availableFilters = await getAvailableFilters();
 
-  const extractPrompt = `Extract filter values from: "${input}"
+  const extractPrompt = `Extract ALL relevant filter values from: "${input}"
     Available options: ${JSON.stringify(availableFilters, null, 2)}
-    Extract only values mentioned in the query. Leave fields empty if not mentioned.`;
+    Extract only values explicitly mentioned in the query. Leave fields empty if not mentioned.`;
 
   return await extractorLLM.invoke(extractPrompt);
 }
 
-// Node 2A: Prepare Strict Search Parameters (predefined template with filters + semantic + RRF retrievers)
-async function prepareStrictParams(state: typeof VCState.State) {
+// Node 2A: Prepare Investment-Focused Search Parameters
+async function prepareInvestmentSearch(state: typeof VCState.State) {
   console.log(
-    "🎯 Preparing STRICT search parameters with predefined RRF template..."
+    "💰 Preparing INVESTMENT-FOCUSED search parameters with financial emphasis..."
   );
 
   try {
-    // Extract filters for the predefined template
+    // Extract all filter values from input
     const values = await extractFilterValues(state.input);
 
-    const searchParams = {
+    let searchParams: any = {
+      template_id: INVESTMENT_FOCUSED_TEMPLATE,
       query_text: state.input,
-      industry: values.industry || [],
-      location: values.location || [],
-      funding_stage: values.funding_stage || [],
-      funding_amount_gte: values.funding_amount_gte || 0,
-      funding_amount_lte: values.funding_amount_lte || 100000000,
-      lead_investor: values.lead_investor || [],
-      template_id: STRICT_SEARCH_TEMPLATE_ID,
-      search_type: "strict_template_rrf",
+      ...values,
     };
-
-    console.log(
-      "🎯 STRICT template params (predefined RRF):",
-      JSON.stringify(searchParams, null, 2)
-    );
 
     return { searchParams };
   } catch (error) {
-    console.error("❌ Error preparing strict params:", error);
+    console.error("❌ Error preparing investment-focused params:", error);
     return {
       searchParams: {},
     };
   }
 }
 
-// Node 2B: Prepare Flexible Search Parameters (dynamic query built from LLM-extracted filters)
-async function prepareFlexibleParams(state: typeof VCState.State) {
+// Node 2B: Prepare Market-Focused Search Parameters
+async function prepareMarketSearch(state: typeof VCState.State) {
   console.log(
-    "� Preparing FLEXIBLE search parameters with LLM-driven dynamic query..."
+    "🔍 Preparing MARKET-FOCUSED search parameters with market emphasis..."
   );
 
   try {
-    // Extract filters using LLM and build dynamic query
+    // Extract all filter values from input
     const values = await extractFilterValues(state.input);
 
-    // Build dynamic query based on extracted filters
-    const mustClauses = [
-      {
-        semantic: {
-          field: "semantic_field",
-          query: state.input,
-        },
-      },
-    ];
-
-    const shouldClauses = [];
-
-    if (values.industry && values.industry.length > 0) {
-      shouldClauses.push({
-        terms: {
-          industry: values.industry,
-        },
-      });
-    }
-
-    if (values.funding_stage && values.funding_stage.length > 0) {
-      shouldClauses.push({
-        terms: {
-          funding_stage: values.funding_stage,
-        },
-      });
-    }
-
-    if (values.location && values.location.length > 0) {
-      shouldClauses.push({
-        terms: {
-          location: values.location,
-        },
-      });
-    }
-
-    if (values.lead_investor && values.lead_investor.length > 0) {
-      shouldClauses.push({
-        terms: {
-          lead_investor: values.lead_investor,
-        },
-      });
-    }
-
-    if (
-      (values.funding_amount_gte && values.funding_amount_gte > 0) ||
-      (values.funding_amount_lte && values.funding_amount_lte < 100000000)
-    ) {
-      shouldClauses.push({
-        range: {
-          funding_amount: {
-            ...(values.funding_amount_gte &&
-              values.funding_amount_gte > 0 && {
-                gte: values.funding_amount_gte,
-              }),
-            ...(values.funding_amount_lte &&
-              values.funding_amount_lte < 100000000 && {
-                lte: values.funding_amount_lte,
-              }),
-          },
-        },
-      });
-    }
-
-    const dynamicQuery = {
-      size: 5,
-      query: {
-        bool: {
-          must: mustClauses,
-          should: shouldClauses,
-          minimum_should_match: 2,
-        },
-      },
-    };
-
-    const searchParams = {
+    let searchParams: any = {
+      template_id: MARKET_FOCUSED_TEMPLATE,
       query_text: state.input,
-      dynamic_query: dynamicQuery,
-      extracted_filters: values,
-      search_type: "flexible_dynamic_llm",
+      ...values,
     };
-
-    console.log(
-      "🌟 FLEXIBLE dynamic query built from LLM:",
-      JSON.stringify(searchParams.dynamic_query, null, 2)
-    );
 
     return { searchParams };
   } catch (error) {
-    console.error("❌ Error preparing flexible params:", error);
+    console.error("❌ Error preparing market-focused params:", error);
     return {};
   }
 }
 
 // Node 3: Execute Search
 async function executeSearch(state: typeof VCState.State) {
-  console.log(`🔍 Executing ${state.searchParams.search_type} search...`);
+  const { searchParams } = state;
 
   try {
-    const { searchParams } = state;
+    // getting formed query from template for debugging
+    const renderedTemplate = await esClient.renderSearchTemplate({
+      id: searchParams.template_id,
+      params: searchParams,
+    });
 
-    let results;
+    console.log(
+      "📋 Complete query:",
+      JSON.stringify(renderedTemplate.template_output, null, 2)
+    );
 
-    if (searchParams.dynamic_query) {
-      // Strict: Execute dynamic query built in code
-      console.log(
-        `📋 ${searchParams.search_type.toUpperCase()} DYNAMIC QUERY:`,
-        JSON.stringify(searchParams.dynamic_query, null, 2)
-      );
-
-      results = await esClient.search({
-        index: INDEX_NAME,
-        ...searchParams.dynamic_query,
-      });
-    } else {
-      // Flexible: Execute template-based query
-      const renderedTemplate = await esClient.renderSearchTemplate({
-        id: searchParams.template_id,
-        params: searchParams,
-      });
-
-      console.log(
-        `📋 ${searchParams.search_type.toUpperCase()} TEMPLATE QUERY:`,
-        JSON.stringify(renderedTemplate.template_output, null, 2)
-      );
-
-      results = await esClient.searchTemplate({
-        index: INDEX_NAME,
-        id: searchParams.template_id,
-        params: searchParams,
-      });
-    }
+    const results = await esClient.searchTemplate({
+      index: INDEX_NAME,
+      id: searchParams.template_id,
+      params: searchParams,
+    });
 
     return {
       results: results.hits.hits.map((hit: any) => hit._source),
     };
-  } catch (error) {
+  } catch (error: any) {
     console.error(`❌ ${state.searchParams.search_type} search error:`, error);
     return { results: [] };
   }
@@ -338,9 +240,7 @@ async function executeSearch(state: typeof VCState.State) {
 async function visualizeResults(state: typeof VCState.State) {
   const results = state.results || [];
 
-  let formattedResults = `🎯 Found ${results.length} startup${
-    results.length > 1 ? "s" : ""
-  } matching your criteria:\n\n`;
+  let formattedResults = `🎯 Found ${results.length} startups matching your criteria:\n\n`;
 
   results.forEach((startup: any, index: number) => {
     formattedResults += `${index + 1}. **${startup.company_name}**\n`;
@@ -376,15 +276,15 @@ async function saveGraphImage(app: any): Promise<void> {
 
 async function main() {
   await createIndex();
-  await ingestDocuments();
   await createSearchTemplates();
+  await ingestDocuments();
 
   // Create the workflow graph with shared state
   const workflow = new StateGraph(VCState)
     // Register nodes - these are the processing functions
     .addNode("decideStrategy", decideSearchStrategy)
-    .addNode("prepareStrictParams", prepareStrictParams)
-    .addNode("prepareFlexibleParams", prepareFlexibleParams)
+    .addNode("prepareInvestmentSearch", prepareInvestmentSearch)
+    .addNode("prepareMarketSearch", prepareMarketSearch)
     .addNode("executeSearch", executeSearch)
     .addNode("visualizeResults", visualizeResults)
     // Define execution flow with conditional branching
@@ -393,12 +293,12 @@ async function main() {
       "decideStrategy",
       (state: typeof VCState.State) => state.searchStrategy, // Conditional function
       {
-        strict: "prepareStrictParams", // If strict -> dynamic query preparation
-        flexible: "prepareFlexibleParams", // If flexible -> template preparation
+        investment_focused: "prepareInvestmentSearch", // If investment focused -> RRF template preparation
+        market_focused: "prepareMarketSearch", // If market focused -> dynamic query preparation
       }
     )
-    .addEdge("prepareStrictParams", "executeSearch") // Strict prep -> execute
-    .addEdge("prepareFlexibleParams", "executeSearch") // Flexible prep -> execute
+    .addEdge("prepareInvestmentSearch", "executeSearch") // Investment prep -> execute
+    .addEdge("prepareMarketSearch", "executeSearch") // Market prep -> execute
     .addEdge("executeSearch", "visualizeResults") // Execute -> visualize
     .addEdge("visualizeResults", "__end__"); // End workflow
 
@@ -406,15 +306,17 @@ async function main() {
 
   await saveGraphImage(app);
 
-  const strictQuery =
-    "Find exactly Series A fintech startups in San Francisco with funding between $10M-$15M from Andreessen Horowitz";
+  // Investment-focused query (emphasizes funding, revenue, financial metrics)
+  // const query =
+  //   "Find startups with Series A or Series B funding between $8M-$25M and monthly revenue above $500K";
 
-  const flexibleQuery =
-    "Find promising early-stage startups in tech hubs that are similar to successful fintech companies";
+  // Market-focused query (emphasizes industry, geography, market positioning)
+  const query =
+    "Find fintech and healthcare startups in San Francisco, New York, or Boston";
+  console.log("🔍 Query:", query);
 
-  console.log("🔍 Testing strict hybrid search...");
-  const strictResult = await app.invoke({ input: strictQuery });
-  console.log(strictResult.final);
+  const marketResult = await app.invoke({ input: query });
+  console.log(marketResult.final);
 }
 
 main().catch(console.error);

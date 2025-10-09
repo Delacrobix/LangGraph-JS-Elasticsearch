@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import { StateGraph, Annotation } from "@langchain/langgraph";
+import { StateGraph, Annotation, START, END } from "@langchain/langgraph";
 import { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 import {
@@ -248,9 +248,9 @@ async function visualizeResults(state: typeof VCState.State) {
     formattedResults += `   💰 ${startup.funding_stage} - $${(
       startup.funding_amount / 1000000
     ).toFixed(1)}M\n`;
-    formattedResults += `   👥 ${startup.employee_count} employees | 📈 $${(
-      startup.monthly_revenue / 1000
-    ).toFixed(0)}K MRR\n`;
+    formattedResults += `    $${(startup.monthly_revenue / 1000).toFixed(
+      0
+    )}K MRR\n`;
     formattedResults += `   🏦 Lead: ${startup.lead_investor}\n`;
     formattedResults += `   📝 ${startup.description}\n\n`;
   });
@@ -283,37 +283,37 @@ async function main() {
   const workflow = new StateGraph(VCState)
     // Register nodes - these are the processing functions
     .addNode("decideStrategy", decideSearchStrategy)
-    .addNode("prepareInvestmentSearch", prepareInvestmentSearch)
-    .addNode("prepareMarketSearch", prepareMarketSearch)
+    .addNode("prepareInvestment", prepareInvestmentSearch)
+    .addNode("prepareMarket", prepareMarketSearch)
     .addNode("executeSearch", executeSearch)
     .addNode("visualizeResults", visualizeResults)
     // Define execution flow with conditional branching
-    .addEdge("__start__", "decideStrategy") // Start with strategy decision
+    .addEdge(START, "decideStrategy") // Start with strategy decision
     .addConditionalEdges(
       "decideStrategy",
       (state: typeof VCState.State) => state.searchStrategy, // Conditional function
       {
-        investment_focused: "prepareInvestmentSearch", // If investment focused -> RRF template preparation
-        market_focused: "prepareMarketSearch", // If market focused -> dynamic query preparation
+        investment_focused: "prepareInvestment", // If investment focused -> RRF template preparation
+        market_focused: "prepareMarket", // If market focused -> dynamic query preparation
       }
     )
-    .addEdge("prepareInvestmentSearch", "executeSearch") // Investment prep -> execute
-    .addEdge("prepareMarketSearch", "executeSearch") // Market prep -> execute
+    .addEdge("prepareInvestment", "executeSearch") // Investment prep -> execute
+    .addEdge("prepareMarket", "executeSearch") // Market prep -> execute
     .addEdge("executeSearch", "visualizeResults") // Execute -> visualize
-    .addEdge("visualizeResults", "__end__"); // End workflow
+    .addEdge("visualizeResults", END); // End workflow
 
   const app = workflow.compile();
 
   await saveGraphImage(app);
 
   // Investment-focused query (emphasizes funding, revenue, financial metrics)
-  // const query =
-  //   "Find startups with Series A or Series B funding between $8M-$25M and monthly revenue above $500K";
+  const query =
+    "Find startups with Series A or Series B funding between $8M-$25M and monthly revenue above $500K";
 
   // Market-focused query (emphasizes industry, geography, market positioning)
-  const query =
-    "Find fintech and healthcare startups in San Francisco, New York, or Boston";
-  console.log("🔍 Query:", query);
+  // const query =
+  //   "Find fintech and healthcare startups in San Francisco, New York, or Boston";
+  // console.log("🔍 Query:", query);
 
   const marketResult = await app.invoke({ input: query });
   console.log(marketResult.final);

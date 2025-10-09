@@ -28,7 +28,6 @@ const StartupDocumentSchema = z.object({
   funding_amount: z.number(),
   lead_investor: z.string(),
   monthly_revenue: z.number(),
-  employee_count: z.number(),
   business_model: z.string(),
 });
 
@@ -79,7 +78,6 @@ async function createIndex() {
           copy_to: "semantic_field",
         },
         monthly_revenue: { type: "long" },
-        employee_count: { type: "integer" },
         business_model: {
           type: "keyword",
           copy_to: "semantic_field",

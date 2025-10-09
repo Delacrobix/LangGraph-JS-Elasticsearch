@@ -8,7 +8,6 @@
     "funding_amount": 8000000,
     "lead_investor": "Sequoia Capital",
     "monthly_revenue": 500000,
-    "employee_count": 45,
     "business_model": "B2B"
   },
   {
@@ -20,7 +19,6 @@
     "funding_amount": 15000000,
     "lead_investor": "Kleiner Perkins",
     "monthly_revenue": 750000,
-    "employee_count": 78,
     "business_model": "B2B2C"
   },
   {
@@ -32,7 +30,6 @@
     "funding_amount": 25000000,
     "lead_investor": "Tiger Global Management",
     "monthly_revenue": 1200000,
-    "employee_count": 120,
     "business_model": "B2C"
   },
   {
@@ -44,7 +41,6 @@
     "funding_amount": 18000000,
     "lead_investor": "General Catalyst",
     "monthly_revenue": 900000,
-    "employee_count": 95,
     "business_model": "B2B"
   },
   {
@@ -56,7 +52,6 @@
     "funding_amount": 5000000,
     "lead_investor": "Founders Fund",
     "monthly_revenue": 300000,
-    "employee_count": 32,
     "business_model": "B2B"
   },
   {
@@ -68,7 +63,6 @@
     "funding_amount": 12000000,
     "lead_investor": "NEA (New Enterprise Associates)",
     "monthly_revenue": 650000,
-    "employee_count": 58,
     "business_model": "B2B"
   },
   {
@@ -80,7 +74,6 @@
     "funding_amount": 20000000,
     "lead_investor": "Insight Partners",
     "monthly_revenue": 1100000,
-    "employee_count": 85,
     "business_model": "B2B"
   },
   {
@@ -92,7 +85,6 @@
     "funding_amount": 10000000,
     "lead_investor": "Battery Ventures",
     "monthly_revenue": 450000,
-    "employee_count": 42,
     "business_model": "B2B"
   },
   {
@@ -104,7 +96,6 @@
     "funding_amount": 6000000,
     "lead_investor": "Madrona Venture Group",
     "monthly_revenue": 250000,
-    "employee_count": 28,
     "business_model": "B2B"
   },
   {
@@ -116,7 +107,6 @@
     "funding_amount": 14000000,
     "lead_investor": "Benchmark Capital",
     "monthly_revenue": 580000,
-    "employee_count": 67,
     "business_model": "B2B2C"
   },
   {
@@ -128,7 +118,6 @@
     "funding_amount": 9000000,
     "lead_investor": "GV (Google Ventures)",
     "monthly_revenue": 380000,
-    "employee_count": 54,
     "business_model": "B2B"
   },
   {
@@ -140,7 +129,6 @@
     "funding_amount": 16000000,
     "lead_investor": "Coinbase Ventures",
     "monthly_revenue": 820000,
-    "employee_count": 73,
     "business_model": "B2C"
   },
   {
@@ -151,9 +139,8 @@
     "funding_stage": "Series B",
     "funding_amount": 22000000,
     "lead_investor": "Energy Impact Partners",
-    "monthly_revenue": 950000,
-    "employee_count": 89,
-    "business_model": "B2B"
+    "monthly_revenue": 95000,
+    "business_model": "B2C"
   },
   {
     "description": "EduTech creates interactive learning platforms for K-12 education. Gamified learning experiences improve student engagement by 60% across 500+ schools.",
@@ -164,7 +151,6 @@
     "funding_amount": 11000000,
     "lead_investor": "Reach Capital",
     "monthly_revenue": 420000,
-    "employee_count": 48,
     "business_model": "B2B"
   },
   {
@@ -176,7 +162,6 @@
     "funding_amount": 7000000,
     "lead_investor": "S2G Ventures",
     "monthly_revenue": 290000,
-    "employee_count": 35,
     "business_model": "B2B"
   },
   {
@@ -188,7 +173,6 @@
     "funding_amount": 4500000,
     "lead_investor": "Bullpen Capital",
     "monthly_revenue": 180000,
-    "employee_count": 26,
     "business_model": "B2C"
   },
   {
@@ -200,7 +184,6 @@
     "funding_amount": 19000000,
     "lead_investor": "Norwest Venture Partners",
     "monthly_revenue": 780000,
-    "employee_count": 92,
     "business_model": "B2B"
   },
   {
@@ -212,7 +195,6 @@
     "funding_amount": 13000000,
     "lead_investor": "Fifth Wall",
     "monthly_revenue": 540000,
-    "employee_count": 61,
     "business_model": "B2B"
   },
   {
@@ -224,7 +206,6 @@
     "funding_amount": 12000000,
     "lead_investor": "Bitkraft Ventures",
     "monthly_revenue": 680000,
-    "employee_count": 55,
     "business_model": "B2C"
   },
   {
@@ -236,7 +217,6 @@
     "funding_amount": 35000000,
     "lead_investor": "Space Capital",
     "monthly_revenue": 1400000,
-    "employee_count": 145,
     "business_model": "B2B2C"
   }
 ]

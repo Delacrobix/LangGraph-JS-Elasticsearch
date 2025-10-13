@@ -51,6 +51,11 @@ async function getAvailableFilters() {
       },
     });
 
+    console.log(
+      "✅ Available filters:",
+      JSON.stringify(response.aggregations, null, 2)
+    );
+
     return response.aggregations;
   } catch (error) {
     console.error("❌ Error getting available filters:", error);

@@ -4,8 +4,7 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
-    "start": "tsx main.ts",
-    "ingest": "tsx ingest.ts"
+    "start": "tsx main.ts"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^9.1.1",
